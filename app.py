@@ -1,4 +1,4 @@
-import streamlit as st
+frimport streamlit as st
 import fastf1 as ff1
 import pandas as pd
 import numpy as np
@@ -108,10 +108,11 @@ def get_clean_laps(_laps, driver):
 # ============================================================
 with st.spinner("🔄 Loading 2026 Australian GP Race Data..."):
     try:
-        race = load_session()
-        laps = race.laps
-        st.success("✅ Race data loaded successfully!")
-        data_loaded = True
+        with st.spinner("🔄 Loading race data..."):
+            race = load_session()
+            laps = race.laps
+            st.success("✅ Race data loaded successfully!")
+            data_loaded = True
     except Exception as e:
         st.error(f"❌ Error loading data: {e}")
         data_loaded = False
@@ -1495,3 +1496,4 @@ st.markdown("""
     Analysis by Karthikeyan L
 </div>
 """, unsafe_allow_html=True)
+
