@@ -13,8 +13,7 @@ import os
 st.set_page_config(
     page_title="🏎️ Ferrari Strategy Autopsy | AUS GP 2026",
     page_icon="🏎️",
-    layout="wide",
-    initial_sidebar_state="expanded"
+    layout="wide"
 )
 
 st.markdown("""
@@ -57,13 +56,31 @@ DRIVERS = ['RUS', 'ANT', 'LEC', 'HAM']
 # ============================================================
 # DATA LOADING
 # ============================================================
-@st.cache_resource(show_spinner=False)
+@@st.cache_resource(show_spinner=False)
 def load_session():
-    os.makedirs('/tmp/f1_cache', exist_ok=True)
-    ff1.Cache.enable_cache('/tmp/f1_cache')
-    race = ff1.get_session(2026, 'Australia', 'R')
-    race.load(laps=True, telemetry=True, weather=True)
-    return race
+    try:
+        import os
+        import fastf1 as ff1
+        os.makedirs('/tmp/f1_cache', exist_ok=True)
+        ff1.Cache.enable_cache('/tmp/f1_cache')
+        race = ff1.get_session(2026, 'Australia', 'R')
+        race.load(laps=True, telemetry=True, weather=True)
+        return race, None
+    except Exception as e:
+        return None, str(e)
+
+# In your main app body:
+with st.spinner("🔄 Loading 2026 Australian GP Race Data..."):
+    race, error = load_session()
+
+if error:
+    st.error(f"❌ Failed to load data: {error}")
+    st.info("💡 Try clicking 'Manage App' → 'Reboot app'")
+    st.stop()
+
+laps = race.laps
+st.success("✅ Race data loaded!")
+
 
 @st.cache_data(show_spinner=False)
 def get_gap_per_lap(_laps, d1, d2):
@@ -1496,4 +1513,5 @@ st.markdown("""
     Analysis by Karthikeyan L
 </div>
 """, unsafe_allow_html=True)
+
 
