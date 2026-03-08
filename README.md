@@ -11,7 +11,7 @@ Comprehensive lap-by-lap analysis of the 2026 Australian Grand Prix,
 examining how Ferrari lost a commanding race lead to Mercedes through
 strategic decisions, pit stop timing, and tyre management.
 
-🔗 **[View Live App](https://f1-australain-gp-2026.streamlit.app/)
+🔗 [View Live App](https://f1-australain-gp-2026.streamlit.app/)
 ---
 
 ## 📚 Research Foundation
