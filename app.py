@@ -1,5 +1,4 @@
 import streamlit as st
-import fastf1 as ff1
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
@@ -53,47 +52,40 @@ TEAMS = {
     'HAM': 'Ferrari',
 }
 DRIVERS = ['RUS', 'ANT', 'LEC', 'HAM']
+DATA_DIR = "data"
 
 # ============================================================
-# LAZY LOAD GATE
-# ============================================================
-if 'race_loaded' not in st.session_state:
-    st.session_state.race_loaded = False
-    st.session_state.race = None
-
-if not st.session_state.race_loaded:
-    st.title("🏎️ Ferrari Strategy Autopsy | AUS GP 2026")
-    st.markdown("**Leclerc P4 → P1 at Turn 1 — then lost the lead at the pit stops.**")
-    st.info("👇 Click below to load race data. First load: ~2–3 minutes (FastF1 download).")
-    col_l, col_c, col_r = st.columns([1, 2, 1])
-    with col_c:
-        if st.button("🚀 Load 2026 Australian GP Data", type="primary"):
-            with st.spinner("⏳ Downloading from FastF1 API — please wait..."):
-                try:
-                    os.makedirs('/tmp/f1_cache', exist_ok=True)
-                    ff1.Cache.enable_cache('/tmp/f1_cache')
-                    race = ff1.get_session(2026, 'Australia', 'R')
-                    race.load(laps=True, telemetry=True, weather=True)
-                    st.session_state.race = race
-                    st.session_state.race_loaded = True
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"❌ Load failed: {e}")
-    st.stop()
-
-# ============================================================
-# DATA IS LOADED
-# ============================================================
-race = st.session_state.race
-laps = race.laps
-
-# ============================================================
-# CACHED HELPER FUNCTIONS
+# DATA LOADING FROM PARQUET
 # ============================================================
 @st.cache_data(show_spinner=False)
+def load_laps():
+    laps = pd.read_parquet(f"{DATA_DIR}/laps.parquet")
+    td_cols = [
+        'LapTime', 'PitOutTime', 'PitInTime',
+        'Sector1Time', 'Sector2Time', 'Sector3Time',
+        'Sector1SessionTime', 'Sector2SessionTime', 'Sector3SessionTime',
+        'LapStartTime', 'Time'
+    ]
+    for col in td_cols:
+        if col in laps.columns:
+            laps[col] = pd.to_timedelta(laps[col], unit='s', errors='coerce')
+    return laps
+
+@st.cache_data(show_spinner=False)
+def load_tel(driver, kind):
+    # kind: 'best' | 'lap1' | 'fresh' | 'deg'
+    path = f"{DATA_DIR}/tel_{driver}_{kind}.parquet"
+    if not os.path.exists(path):
+        return None
+    df = pd.read_parquet(path)
+    if 'Time' in df.columns:
+        df['Time'] = pd.to_timedelta(df['Time'], unit='s', errors='coerce')
+    return df
+
+@st.cache_data(show_spinner=False)
 def get_gap_per_lap(_laps, d1, d2):
-    df1 = _laps.pick_drivers(d1)[['LapNumber', 'LapTime']].copy()
-    df2 = _laps.pick_drivers(d2)[['LapNumber', 'LapTime']].copy()
+    df1 = _laps[_laps['Driver'] == d1][['LapNumber', 'LapTime']].copy()
+    df2 = _laps[_laps['Driver'] == d2][['LapNumber', 'LapTime']].copy()
     df1['Cum1'] = df1['LapTime'].dt.total_seconds().cumsum()
     df2['Cum2'] = df2['LapTime'].dt.total_seconds().cumsum()
     m = df1.merge(df2, on='LapNumber')
@@ -105,7 +97,7 @@ def get_pit_data(_laps, drivers):
     rows = []
     for d in drivers:
         try:
-            dl = _laps.pick_drivers(d)
+            dl   = _laps[_laps['Driver'] == d]
             pits = dl[dl['PitOutTime'].notna()]
             for _, r in pits.iterrows():
                 rows.append({
@@ -123,10 +115,23 @@ def get_pit_data(_laps, drivers):
 
 @st.cache_data(show_spinner=False)
 def get_clean_laps(_laps, driver):
-    d = _laps.pick_drivers(driver).pick_accurate().copy()
+    d = _laps[_laps['Driver'] == driver].copy()
+    if 'IsAccurate' in d.columns:
+        d = d[d['IsAccurate'] == True]
     d['LapTime_s'] = d['LapTime'].dt.total_seconds()
     d = d[d['LapTime_s'].between(75, 120)]
     return d[['LapNumber', 'LapTime_s', 'TyreLife', 'Compound', 'Position']]
+
+# ---- Load data ---------------------------------------------------------------
+try:
+    laps = load_laps()
+except FileNotFoundError:
+    st.error(
+        "❌ Data files not found in `/data` folder. "
+        "Run `prepare_data.py` locally and commit the `/data` folder to your repo."
+    )
+    st.code("python prepare_data.py", language="bash")
+    st.stop()
 
 # ============================================================
 # SIDEBAR
@@ -165,7 +170,7 @@ st.markdown(
     "**Leclerc led the race from Lap 1 — Mercedes took the win with a perfect undercut. "
     "This analysis breaks down every lap, every pit call, every second lost.**"
 )
-st.success("✅ Race data loaded successfully!")
+st.success("✅ Race data loaded from local cache.")
 st.divider()
 
 # ============================================================
@@ -177,12 +182,13 @@ if show_verdict:
     try:
         result_data = {}
         for d in DRIVERS:
-            dl         = laps.pick_drivers(d)
-            final_pos  = dl['Position'].dropna().iloc[-1] if not dl.empty else "N/A"
-            best_lap   = dl.pick_accurate()['LapTime'].min()
+            dl        = laps[laps['Driver'] == d]
+            final_pos = dl['Position'].dropna().iloc[-1] if not dl.empty else "N/A"
+            acc       = dl[dl['IsAccurate'] == True] if 'IsAccurate' in dl.columns else dl
+            best_lap  = acc['LapTime'].min()
             best_lap_s = best_lap.total_seconds() if pd.notna(best_lap) else None
-            laps_led   = len(dl[dl['Position'] == 1])
-            pit_laps   = dl[dl['PitOutTime'].notna()]['LapNumber'].tolist()
+            laps_led  = len(dl[dl['Position'] == 1])
+            pit_laps  = dl[dl['PitOutTime'].notna()]['LapNumber'].tolist()
             result_data[d] = {
                 'pos':  int(final_pos) if final_pos != "N/A" else "N/A",
                 'best': f"{best_lap_s:.3f}s" if best_lap_s else "N/A",
@@ -314,14 +320,14 @@ if show_position:
     try:
         fig = go.Figure()
         for d in active:
-            dl = laps.pick_drivers(d)[['LapNumber', 'Position']].dropna()
+            dl = laps[laps['Driver'] == d][['LapNumber', 'Position']].dropna()
             fig.add_trace(go.Scatter(
                 x=dl['LapNumber'], y=dl['Position'],
                 name=f"{d} – {FULL_NAMES[d]}",
                 line=dict(color=COLORS[d], width=2.5),
                 mode='lines+markers', marker=dict(size=4)
             ))
-        lec_laps = laps.pick_drivers('LEC')
+        lec_laps = laps[laps['Driver'] == 'LEC']
         lec_p1   = lec_laps[lec_laps['Position'] == 1]['LapNumber']
         if len(lec_p1) > 0:
             fig.add_vrect(
@@ -392,9 +398,10 @@ if show_deg:
                     if len(x) > 1:
                         coef = np.polyfit(x, y, 1)
                         deg_rows.append({
-                            'Driver': d, 'Compound': comp,
+                            'Driver':           d,
+                            'Compound':         comp,
                             'Deg Rate (s/lap)': round(coef[0], 4),
-                            'Laps on Tyre': len(stint),
+                            'Laps on Tyre':     len(stint),
                         })
         if deg_rows:
             deg_df = pd.DataFrame(deg_rows).sort_values('Deg Rate (s/lap)', ascending=False)
@@ -468,7 +475,7 @@ if show_pitstops:
     st.divider()
 
 # ============================================================
-# TELEMETRY COMPARISON
+# TELEMETRY COMPARISON — Fresh vs Degraded
 # ============================================================
 if show_tel:
     st.subheader("📡 Telemetry — Fresh vs Degraded Tyre")
@@ -480,43 +487,42 @@ if show_tel:
     try:
         pit_df    = get_pit_data(laps, [driver_tel])
         pit_lap   = int(pit_df['PitLap'].min()) if not pit_df.empty else 20
-        dl        = laps.pick_drivers(driver_tel)
-        lap_fresh = dl[dl['LapNumber'] == 2].iloc[0]
-        lap_deg   = dl[dl['LapNumber'] == max(2, pit_lap - 1)].iloc[0]
-        tel_f     = lap_fresh.get_telemetry().add_distance()
-        tel_d     = lap_deg.get_telemetry().add_distance()
+        tel_f     = load_tel(driver_tel, 'fresh')
+        tel_d     = load_tel(driver_tel, 'deg')
 
-        fig = make_subplots(
-            rows=3, cols=1, shared_xaxes=True,
-            subplot_titles=["Speed (km/h)", "Throttle (%)", "Brake + Gear"]
-        )
-        for tel, label, opacity in [
-            (tel_f, "Lap 2 (Fresh)", 1.0),
-            (tel_d, f"Lap {pit_lap-1} (Degraded)", 0.65)
-        ]:
-            col = COLORS[driver_tel]
-            dash = 'solid' if opacity == 1.0 else 'dash'
-            fig.add_trace(go.Scatter(
-                x=tel['Distance'], y=tel['Speed'], name=label,
-                opacity=opacity, line=dict(color=col, width=2, dash=dash)
-            ), row=1, col=1)
-            fig.add_trace(go.Scatter(
-                x=tel['Distance'], y=tel['Throttle'], name=label,
-                opacity=opacity, line=dict(color=col, width=2, dash=dash),
-                showlegend=False
-            ), row=2, col=1)
-            fig.add_trace(go.Scatter(
-                x=tel['Distance'], y=tel['nGear'], name=label,
-                opacity=opacity, line=dict(color=col, width=2, dash=dash),
-                showlegend=False
-            ), row=3, col=1)
-
-        fig.update_layout(
-            title=f"{FULL_NAMES[driver_tel]}: Fresh vs Degraded Tyre Telemetry",
-            template='plotly_dark', paper_bgcolor='#0f0f0f',
-            plot_bgcolor='#1a1a1a', height=700
-        )
-        st.plotly_chart(fig, width='stretch')
+        if tel_f is None or tel_d is None:
+            st.warning("Telemetry parquet files not found for this driver.")
+        else:
+            fig = make_subplots(
+                rows=3, cols=1, shared_xaxes=True,
+                subplot_titles=["Speed (km/h)", "Throttle (%)", "Gear"]
+            )
+            for tel, label, opacity in [
+                (tel_f, "Fresh Tyre (Lap 2)", 1.0),
+                (tel_d, f"Degraded Tyre (Lap {pit_lap-1})", 0.65)
+            ]:
+                col  = COLORS[driver_tel]
+                dash = 'solid' if opacity == 1.0 else 'dash'
+                fig.add_trace(go.Scatter(
+                    x=tel['Distance'], y=tel['Speed'], name=label,
+                    opacity=opacity, line=dict(color=col, width=2, dash=dash)
+                ), row=1, col=1)
+                fig.add_trace(go.Scatter(
+                    x=tel['Distance'], y=tel['Throttle'], name=label,
+                    opacity=opacity, line=dict(color=col, width=2, dash=dash),
+                    showlegend=False
+                ), row=2, col=1)
+                fig.add_trace(go.Scatter(
+                    x=tel['Distance'], y=tel['nGear'], name=label,
+                    opacity=opacity, line=dict(color=col, width=2, dash=dash),
+                    showlegend=False
+                ), row=3, col=1)
+            fig.update_layout(
+                title=f"{FULL_NAMES[driver_tel]}: Fresh vs Degraded Tyre Telemetry",
+                template='plotly_dark', paper_bgcolor='#0f0f0f',
+                plot_bgcolor='#1a1a1a', height=700
+            )
+            st.plotly_chart(fig, width='stretch')
     except Exception as e:
         st.warning(f"Telemetry compare: {e}")
     st.divider()
@@ -537,7 +543,7 @@ if show_ers:
                 savgol_filter(df['Acceleration'], 11, 3)
                 if len(df) > 11 else df['Acceleration']
             )
-            rpm_factor       = df['Speed'].mean() / df['RPM'].mean() if df['RPM'].mean() > 0 else 0.025
+            rpm_factor         = df['Speed'].mean() / df['RPM'].mean() if df['RPM'].mean() > 0 else 0.025
             df['SpeedFromRPM'] = df['RPM'] * rpm_factor
             df['ERS_Delta']    = df['Speed'] - df['SpeedFromRPM']
             df['ERS_Deploying']  = (df['ERS_Delta'] > 3) & (df['Throttle'] > 80) & (~df['Brake'])
@@ -550,13 +556,18 @@ if show_ers:
             )
             return df
 
-        profiles  = []
-        race_laps = laps.pick_accurate()
+        profiles = []
         for d in active:
             try:
-                lap = race_laps.pick_drivers(d).pick_fastest()
-                tel = lap.get_telemetry().add_distance()
-                df  = compute_ers_proxy(tel)
+                tel = load_tel(d, 'best')
+                if tel is None:
+                    continue
+                # get best LapTime_s from laps
+                dl_acc    = laps[(laps['Driver'] == d)]
+                if 'IsAccurate' in dl_acc.columns:
+                    dl_acc = dl_acc[dl_acc['IsAccurate'] == True]
+                best_lt   = dl_acc['LapTime'].dt.total_seconds().min()
+                df        = compute_ers_proxy(tel)
                 profiles.append({
                     'Driver':     d,
                     'Name':       FULL_NAMES[d],
@@ -564,7 +575,7 @@ if show_ers:
                     'Harvest%':   round(df['ERS_Harvesting'].mean() * 100, 2),
                     'SuperClip%': round(df['SuperClipping'].mean()  * 100, 2),
                     'Boost%':     round(df['BoostMode'].mean()      * 100, 2),
-                    'LapTime_s':  lap['LapTime'].total_seconds(),
+                    'LapTime_s':  best_lt,
                 })
             except Exception as e:
                 st.warning(f"ERS {d}: {e}")
@@ -582,16 +593,14 @@ if show_ers:
                     template='plotly_dark',
                     labels={'value': 'Time % of Lap', 'variable': ''}
                 )
-                fig_bar.update_layout(
-                    paper_bgcolor='#0f0f0f', plot_bgcolor='#1a1a1a', height=380
-                )
+                fig_bar.update_layout(paper_bgcolor='#0f0f0f', plot_bgcolor='#1a1a1a', height=380)
                 st.plotly_chart(fig_bar, width='stretch')
             with col2:
                 categories = ['Deploy%', 'Harvest%', 'SuperClip%', 'Boost%']
                 fig_radar  = go.Figure()
                 for _, row in prof_df.iterrows():
                     maxv = prof_df[categories].max()
-                    vals = [(row[c] / maxv[c]) * 10 for c in categories]
+                    vals = [(row[c] / maxv[c]) * 10 if maxv[c] > 0 else 0 for c in categories]
                     vals.append(vals[0])
                     fig_radar.add_trace(go.Scatterpolar(
                         r=vals, theta=categories + [categories[0]],
@@ -617,29 +626,24 @@ if show_ers:
     st.divider()
 
 # ============================================================
-# INITIAL SPEED vs TIME — LAP 1 RACE START
+# INITIAL SPEED vs TIME — LAP 1
 # ============================================================
 if show_speed:
     st.subheader("🚦 Initial Speed vs Time — Race Start & Lap 1 Battle")
     st.markdown(
         "The opening seconds of the race define track position. "
         "This shows **who accelerated fastest off the line, "
-        "who gained positions and when, and how the ERS boost "
-        "played out in the first 60 seconds**."
+        "who gained positions, and how ERS played out in the first 60 seconds**."
     )
     try:
         lap1_tels = {}
         for d in active:
-            try:
-                dl   = laps.pick_drivers(d)
-                lap1 = dl[dl['LapNumber'] == 1].iloc[0]
-                tel  = lap1.get_telemetry()
+            tel = load_tel(d, 'lap1')
+            if tel is not None:
                 tel['RelTime'] = (tel['Time'] - tel['Time'].iloc[0]).dt.total_seconds()
-                if 'Distance' not in tel.columns:
-                    tel = tel.add_distance()
-                lap1_tels[d] = tel
-            except Exception as e:
-                st.warning(f"Lap 1 tel {d}: {e}")
+                lap1_tels[d]   = tel
+            else:
+                st.warning(f"Lap 1 tel not found for {d}")
 
         if lap1_tels:
             tab_spd, tab_acc, tab_rpm, tab_full = st.tabs([
@@ -649,6 +653,7 @@ if show_speed:
                 "📊 Full Panel",
             ])
 
+            # ---- TAB 1: SPEED vs TIME ----------------------------
             with tab_spd:
                 fig_sv = go.Figure()
                 for d in active:
@@ -698,6 +703,7 @@ if show_speed:
                     width='stretch'
                 )
 
+            # ---- TAB 2: ACCELERATION vs TIME ---------------------
             with tab_acc:
                 fig_acc = go.Figure()
                 for d in active:
@@ -749,8 +755,8 @@ if show_speed:
                     )
                     launch_df = df[df['RelTime'] <= 10]
                     acc_stats.append({
-                        'Driver': d,
-                        'Peak Launch (m/s²)': round(launch_df['AccelSmooth'].max(), 3),
+                        'Driver':               d,
+                        'Peak Launch (m/s²)':   round(launch_df['AccelSmooth'].max(), 3),
                         'Time to 100 km/h (s)': round(df[df['Speed'] >= 100]['RelTime'].min(), 2)
                             if not df[df['Speed'] >= 100].empty else 'N/A',
                         'Time to 200 km/h (s)': round(df[df['Speed'] >= 200]['RelTime'].min(), 2)
@@ -772,6 +778,7 @@ if show_speed:
                     width='stretch'
                 )
 
+            # ---- TAB 3: RPM vs TIME ------------------------------
             with tab_rpm:
                 fig_rpm = make_subplots(
                     rows=2, cols=1, shared_xaxes=True,
@@ -805,6 +812,7 @@ if show_speed:
                 fig_rpm.update_xaxes(title_text="Time (s)", row=2, col=1)
                 st.plotly_chart(fig_rpm, width='stretch')
 
+            # ---- TAB 4: FULL PANEL --------------------------------
             with tab_full:
                 fig_full = make_subplots(
                     rows=6, cols=1, shared_xaxes=True,
@@ -822,7 +830,7 @@ if show_speed:
                 position_timelines = {}
                 for d in active:
                     try:
-                        dl    = laps.pick_drivers(d)
+                        dl    = laps[laps['Driver'] == d]
                         early = dl[dl['LapNumber'] <= 5][
                             ['LapNumber', 'Position', 'LapTime']
                         ].dropna().copy()
@@ -867,10 +875,10 @@ if show_speed:
                         line=dict(color=col, width=2), legendgroup=d, showlegend=False
                     ), row=5, col=1)
                     if d in position_timelines:
-                        pt          = position_timelines[d]
-                        max_time    = df['RelTime'].max()
-                        times_clip  = [t for t in pt['times'] if t <= max_time + 30]
-                        pos_clip    = pt['positions'][:len(times_clip)]
+                        pt         = position_timelines[d]
+                        max_time   = df['RelTime'].max()
+                        times_clip = [t for t in pt['times'] if t <= max_time + 30]
+                        pos_clip   = pt['positions'][:len(times_clip)]
                         fig_full.add_trace(go.Scatter(
                             x=times_clip, y=pos_clip, name=d,
                             mode='lines+markers+text',
@@ -890,18 +898,17 @@ if show_speed:
 
                 fig_full.add_vrect(
                     x0=0, x1=12, fillcolor='rgba(255,255,0,0.04)', line_width=0,
-                    annotation_text="🚦 T1 Battle", annotation_position='top left',
+                    annotation_text="🚦 T1 Battle",
+                    annotation_position='top left',
                     annotation_font_color='#FFFF88', row=6, col=1
                 )
-                fig_full.add_hline(
-                    y=0, row=2, col=1,
-                    line_dash='dash', line_color='#333', opacity=0.6
-                )
-                fig_full.update_yaxes(title_text="km/h", row=1, col=1)
-                fig_full.update_yaxes(title_text="m/s²", row=2, col=1)
-                fig_full.update_yaxes(title_text="RPM",  row=3, col=1)
-                fig_full.update_yaxes(title_text="%",    row=4, col=1)
-                fig_full.update_yaxes(title_text="Gear", dtick=1, row=5, col=1)
+                fig_full.add_hline(y=0, row=2, col=1,
+                                   line_dash='dash', line_color='#333', opacity=0.6)
+                fig_full.update_yaxes(title_text="km/h",  row=1, col=1)
+                fig_full.update_yaxes(title_text="m/s²",  row=2, col=1)
+                fig_full.update_yaxes(title_text="RPM",   row=3, col=1)
+                fig_full.update_yaxes(title_text="%",     row=4, col=1)
+                fig_full.update_yaxes(title_text="Gear",  dtick=1, row=5, col=1)
                 fig_full.update_yaxes(
                     title_text="Pos", autorange='reversed',
                     dtick=1, range=[8, 0], row=6, col=1
@@ -942,7 +949,6 @@ if show_speed:
                     st.info("""
                     🩵 **Antonelli (ANT)**
                     - Grid: P2
-                    - Clean race in P2 behind Russell
                     - Finished P2 — Mercedes 1-2 ✅
                     """)
 
@@ -997,22 +1003,20 @@ if show_speed:
 if show_t1:
     st.subheader("🏁 Pace, Power & Energy — Approach to Turn 1")
     st.markdown(
-        "Albert Park Turn 1 is the critical first braking zone after the "
-        "start/finish straight — **the highest ERS deployment point of the lap**. "
+        "Albert Park Turn 1 is the critical first braking zone — "
+        "**the highest ERS deployment point of the lap**. "
         "This shows who carried most speed, deployed most battery, and braked latest."
     )
     try:
-        T1_START       = 0
-        T1_END         = 400
-        race_best_laps = laps.pick_accurate()
-        t1_tels        = {}
+        T1_START = 0
+        T1_END   = 400
+        t1_tels  = {}
         for d in active:
-            try:
-                lap = race_best_laps.pick_drivers(d).pick_fastest()
-                tel = lap.get_telemetry().add_distance()
+            tel = load_tel(d, 'best')
+            if tel is not None:
                 t1_tels[d] = tel[tel['Distance'].between(T1_START, T1_END)].copy()
-            except Exception as e:
-                st.warning(f"T1 telemetry {d}: {e}")
+            else:
+                st.warning(f"Best lap telemetry not found for {d}")
 
         if t1_tels:
             fig_t1 = make_subplots(
@@ -1062,7 +1066,7 @@ if show_t1:
                 annotation_font_color='#888888'
             )
             fig_t1.update_layout(
-                title="⚡ T1 Approach: Full Breakdown (0–400m from Start Line)",
+                title="⚡ T1 Approach: Full Breakdown (0–400m)",
                 template='plotly_dark', paper_bgcolor='#0f0f0f',
                 plot_bgcolor='#1a1a1a', height=800,
                 legend=dict(orientation='h', y=1.03)
@@ -1123,7 +1127,6 @@ if show_t1:
                         'BrakeDist':  brake_rows['Distance'].min(),
                         'BrakeSpeed': brake_rows['Speed'].iloc[0],
                     })
-
             if brake_data:
                 brake_df = pd.DataFrame(brake_data).sort_values('BrakeDist', ascending=False)
                 col_b1, col_b2 = st.columns(2)
