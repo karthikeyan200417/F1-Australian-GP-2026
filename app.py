@@ -56,7 +56,7 @@ DRIVERS = ['RUS', 'ANT', 'LEC', 'HAM']
 # ============================================================
 # DATA LOADING
 # ============================================================
-@@st.cache_resource(show_spinner=False)
+@st.cache_resource(show_spinner=False)
 def load_session():
     try:
         import os
@@ -1513,6 +1513,7 @@ st.markdown("""
     Analysis by Karthikeyan L
 </div>
 """, unsafe_allow_html=True)
+
 
 
 
