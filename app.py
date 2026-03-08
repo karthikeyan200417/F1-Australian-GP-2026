@@ -6,6 +6,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import plotly.express as px
 import os
+from scipy.signal import savgol_filter
 
 # ============================================================
 # PAGE CONFIG
@@ -58,7 +59,6 @@ DRIVERS = ['RUS', 'ANT', 'LEC', 'HAM']
 # ============================================================
 @st.cache_resource(show_spinner=False)
 def load_session():
-    try:
         import os
         import fastf1 as ff1
         os.makedirs('/tmp/f1_cache', exist_ok=True)
@@ -66,20 +66,28 @@ def load_session():
         race = ff1.get_session(2026, 'Australia', 'R')
         race.load(laps=True, telemetry=True, weather=True)
         return race
-    except Exception as e:
-        return None, str(e)
+if 'race_loaded' not in st.session_state:
+    st.session_state.race_loaded = False
+    st.session_state.race = None
 
-# In your main app body:
-with st.spinner("🔄 Loading 2026 Australian GP Race Data..."):
-    race = load_session()
-
-if race is None:
-    st.error("❌ Failed to load race data. Please reboot the app.")
+if not st.session_state.race_loaded:
+    st.info("👇 Click to load race data (~2–3 mins first time)")
+    if st.button("🚀 Load 2026 Australian GP Data", type="primary"):
+        with st.spinner("⏳ Loading..."):
+            try:
+                os.makedirs('/tmp/f1_cache', exist_ok=True)
+                ff1.Cache.enable_cache('/tmp/f1_cache')
+                race = ff1.get_session(2026, 'Australia', 'R')
+                race.load(laps=True, telemetry=True, weather=True)
+                st.session_state.race = race
+                st.session_state.race_loaded = True
+                st.rerun()
+            except Exception as e:
+                st.error(f"❌ {e}")
     st.stop()
 
+race = st.session_state.race
 laps = race.laps
-st.success("✅ Race data loaded!")
-
 
 @st.cache_data(show_spinner=False)
 def get_gap_per_lap(_laps, d1, d2):
@@ -119,22 +127,7 @@ def get_clean_laps(_laps, driver):
     d = d[d['LapTime_s'].between(75, 120)]
     return d[['LapNumber','LapTime_s','TyreLife','Compound','Position']]
 
-# ============================================================
-# LOAD DATA
-# ============================================================
-with st.spinner("🔄 Loading 2026 Australian GP Race Data..."):
-    try:
-        with st.spinner("🔄 Loading race data..."):
-            race = load_session()
-            laps = race.laps
-            st.success("✅ Race data loaded successfully!")
-            data_loaded = True
-    except Exception as e:
-        st.error(f"❌ Error loading data: {e}")
-        data_loaded = False
 
-if not data_loaded:
-    st.stop()
 
 # ============================================================
 # SIDEBAR
@@ -263,7 +256,7 @@ if show_gap:
                 plot_bgcolor='#1a1a1a',
                 height=420
             )
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
 
             # Auto verdict
             lec_led = gap[gap['Gap'] > 0]
@@ -304,7 +297,7 @@ if show_gap:
                 plot_bgcolor='#1a1a1a',
                 height=420
             )
-            st.plotly_chart(fig2, use_container_width=True)
+            st.plotly_chart(fig2, width='stretch')
         except Exception as e:
             st.warning(f"Gap HAM/ANT: {e}")
 
@@ -328,7 +321,7 @@ if show_gap:
                 plot_bgcolor='#1a1a1a',
                 height=420
             )
-            st.plotly_chart(fig3, use_container_width=True)
+            st.plotly_chart(fig3, width='stretch')
         except Exception as e:
             st.warning(f"Multi gap: {e}")
 
@@ -372,7 +365,7 @@ if show_position:
             plot_bgcolor='#1a1a1a',
             height=480
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
     except Exception as e:
         st.warning(f"Position tracker: {e}")
     st.divider()
@@ -421,7 +414,7 @@ if show_deg:
             plot_bgcolor='#1a1a1a',
             height=480
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
 
         # Degradation rate per driver
         st.markdown("#### 📊 Degradation Rate (seconds/lap per stint)")
@@ -446,7 +439,7 @@ if show_deg:
             st.dataframe(
                 deg_df.style.background_gradient(
                     subset=['Deg Rate (s/lap)'], cmap='RdYlGn_r'
-                ), use_container_width=True
+                ), width='stretch'
             )
     except Exception as e:
         st.warning(f"Degradation: {e}")
@@ -476,7 +469,7 @@ if show_pitstops:
                     plot_bgcolor='#1a1a1a',
                     height=350, showlegend=False
                 )
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width='stretch')
 
             with col2:
                 st.markdown("#### Pit Summary")
@@ -577,7 +570,7 @@ if show_tel:
             plot_bgcolor='#1a1a1a',
             height=700
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
     except Exception as e:
         st.warning(f"Telemetry compare: {e}")
     st.divider()
@@ -650,7 +643,7 @@ if show_ers:
                     plot_bgcolor='#1a1a1a',
                     height=380
                 )
-                st.plotly_chart(fig_bar, use_container_width=True)
+                st.plotly_chart(fig_bar, width='stretch')
 
             with col2:
                 categories = ['Deploy%','Harvest%','SuperClip%','Boost%']
@@ -672,14 +665,14 @@ if show_ers:
                     paper_bgcolor='#0f0f0f',
                     height=380
                 )
-                st.plotly_chart(fig_radar, use_container_width=True)
+                st.plotly_chart(fig_radar, width='stretch')
 
             st.dataframe(
                 prof_df.drop(columns='Name')
                 .style.background_gradient(
                     subset=['Deploy%','Harvest%','SuperClip%','Boost%'],
                     cmap='RdYlGn'
-                ), use_container_width=True
+                ), width='stretch'
             )
     except Exception as e:
         st.warning(f"ERS section: {e}")
@@ -765,7 +758,7 @@ try:
                 height=480,
                 legend=dict(orientation='h', y=1.05)
             )
-            st.plotly_chart(fig_sv, use_container_width=True)
+            st.plotly_chart(fig_sv, width='stretch')
 
             # Speed milestones table
             st.markdown("#### ⏱️ Speed at Key Time Milestones (km/h)")
@@ -782,7 +775,7 @@ try:
                 milestone_data.append(row)
 
             mile_df = pd.DataFrame(milestone_data).set_index('Time (s)')
-            st.dataframe(mile_df, use_container_width=True)
+            st.dataframe(mile_df, width='stretch')
 
         # ---- TAB 2: ACCELERATION vs TIME -------------------------
         with tab_acc:
@@ -844,7 +837,7 @@ try:
                 height=480,
                 legend=dict(orientation='h', y=1.05)
             )
-            st.plotly_chart(fig_acc, use_container_width=True)
+            st.plotly_chart(fig_acc, width='stretch')
 
             # Peak acceleration stats
             st.markdown("#### 🏆 Peak Acceleration Stats — Lap 1")
@@ -887,7 +880,7 @@ try:
                     subset=['Peak Launch (m/s²)'],
                     color='rgba(232,0,45,0.3)'
                 ),
-                use_container_width=True
+                width='stretch'
             )
 
         # ---- TAB 3: RPM vs TIME ----------------------------------
@@ -929,7 +922,7 @@ try:
             fig_rpm.update_yaxes(title_text="RPM", row=1, col=1)
             fig_rpm.update_yaxes(title_text="Gear", dtick=1, row=2, col=1)
             fig_rpm.update_xaxes(title_text="Time (s)", row=2, col=1)
-            st.plotly_chart(fig_rpm, use_container_width=True)
+            st.plotly_chart(fig_rpm, width='stretch')
 
         # ---- TAB 4: FULL PANEL -----------------------------------
         with tab_full:
@@ -1128,7 +1121,7 @@ try:
                 height=1100,
                 legend=dict(orientation='h', y=1.02)
             )
-            st.plotly_chart(fig_full, use_container_width=True)
+            st.plotly_chart(fig_full, width='stretch')
 
             # ---- Position narrative callout ---------------------------
             st.markdown("#### 📍 Position Change Narrative")
@@ -1198,7 +1191,7 @@ try:
             paper_bgcolor='#0f0f0f',
             plot_bgcolor='#1a1a1a'
         )
-        st.plotly_chart(fig_lead, use_container_width=True)
+        st.plotly_chart(fig_lead, width='stretch')
 
         # Time led stats
         st.markdown("#### ⏱️ Speed Leadership — % of First 60 Seconds")
@@ -1334,7 +1327,7 @@ try:
         fig_t1.update_yaxes(title_text="%",       row=3, col=1)
         fig_t1.update_yaxes(title_text="On/Off",  row=4, col=1)
         fig_t1.update_xaxes(title_text="Distance from Start Line (m)", row=4, col=1)
-        st.plotly_chart(fig_t1, use_container_width=True)
+        st.plotly_chart(fig_t1, width='stretch')
 
         # ---- METRIC CARDS: T1 KEY STATS -------------------------
         st.markdown("#### 📊 T1 Approach — Key Stats per Driver")
@@ -1421,7 +1414,7 @@ try:
                     plot_bgcolor='#1a1a1a',
                     height=380, showlegend=False
                 )
-                st.plotly_chart(fig_brake, use_container_width=True)
+                st.plotly_chart(fig_brake, width='stretch')
 
             with col_b2:
                 fig_speed = px.bar(
@@ -1441,7 +1434,7 @@ try:
                     plot_bgcolor='#1a1a1a',
                     height=380, showlegend=False
                 )
-                st.plotly_chart(fig_speed, use_container_width=True)
+                st.plotly_chart(fig_speed, width='stretch')
 
             # Verdict
             latest_braker = brake_df.iloc[0]['Driver']
@@ -1493,7 +1486,7 @@ try:
             plot_bgcolor='#1a1a1a',
             height=400
         )
-        st.plotly_chart(fig_ers_area, use_container_width=True)
+        st.plotly_chart(fig_ers_area, width='stretch')
 
 except Exception as e:
     st.warning(f"T1 analysis: {e}")
@@ -1512,6 +1505,7 @@ st.markdown("""
     Analysis by Karthikeyan L
 </div>
 """, unsafe_allow_html=True)
+
 
 
 
