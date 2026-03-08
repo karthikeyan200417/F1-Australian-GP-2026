@@ -71,11 +71,10 @@ def load_session():
 
 # In your main app body:
 with st.spinner("🔄 Loading 2026 Australian GP Race Data..."):
-    race, error = load_session()
+    race = load_session()
 
-if error:
-    st.error(f"❌ Failed to load data: {error}")
-    st.info("💡 Try clicking 'Manage App' → 'Reboot app'")
+if race is None:
+    st.error("❌ Failed to load race data. Please reboot the app.")
     st.stop()
 
 laps = race.laps
@@ -1513,6 +1512,7 @@ st.markdown("""
     Analysis by Karthikeyan L
 </div>
 """, unsafe_allow_html=True)
+
 
 
 
