@@ -65,7 +65,7 @@ def load_session():
         ff1.Cache.enable_cache('/tmp/f1_cache')
         race = ff1.get_session(2026, 'Australia', 'R')
         race.load(laps=True, telemetry=True, weather=True)
-        return race, None
+        return race
     except Exception as e:
         return None, str(e)
 
@@ -1513,6 +1513,7 @@ st.markdown("""
     Analysis by Karthikeyan L
 </div>
 """, unsafe_allow_html=True)
+
 
 
 
