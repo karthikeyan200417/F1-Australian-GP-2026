@@ -1,4 +1,4 @@
-frimport streamlit as st
+import streamlit as st
 import fastf1 as ff1
 import pandas as pd
 import numpy as np
@@ -1513,5 +1513,6 @@ st.markdown("""
     Analysis by Karthikeyan L
 </div>
 """, unsafe_allow_html=True)
+
 
 
